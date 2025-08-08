@@ -1,0 +1,198 @@
+import asyncio
+import json
+import datetime
+from pyrogram import Client, filters
+from pyrogram.types import Message, ChatPermissions
+
+# بياناتك هنا
+API_ID = 21404699
+API_HASH = "e7d05cd13e028832347d489bfdb485ed"
+BOT_TOKEN = "8272208548:AAFUwgy_LtCEGlaxRCrY7w53itZP_IqxHs0"
+
+# المطورين
+DEV_IDS = [1490559672]  # تقدر تضيف ايديات ثانية
+
+# ملفات حفظ البيانات
+DATA_FILE = "data.json"
+
+# تحميل البيانات أو إنشاء ملف جديد
+try:
+    with open(DATA_FILE, "r") as f:
+        data = json.load(f)
+except:
+    data = {
+        "non_active_users": {},
+        "mute_kick_logs": [],
+        "calls": {},
+        "groups": {},
+        "settings": {}
+    }
+
+app = Client("monitor_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# حفظ البيانات بشكل دوري
+async def save_data():
+    while True:
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f)
+        await asyncio.sleep(60)
+
+# تحقق اشتراك إجباري
+async def check_subscription(user_id):
+    # ضع هنا كود التحقق من الاشتراك في قناة معينة مثلا
+    return True
+
+# إشعار دخول عضو جديد
+@app.on_message(filters.new_chat_members)
+async def new_member_notify(client: Client, message: Message):
+    chat_id = message.chat.id
+    for member in message.new_chat_members:
+        for dev_id in DEV_IDS:
+            await client.send_message(dev_id, f"✅ عضو جديد دخل الكروب [{message.chat.title}]: {member.mention}")
+
+        # سجل عضو جديد في البيانات
+        if str(chat_id) not in data["groups"]:
+            data["groups"][str(chat_id)] = {"members": {}}
+        data["groups"][str(chat_id)]["members"][str(member.id)] = {
+            "join_date": str(datetime.datetime.now()),
+            "messages": 0,
+            "calls": 0,
+            "muted": False,
+            "kicked": False,
+            "last_active": str(datetime.datetime.now())
+        }
+
+# إشعار خروج عضو
+@app.on_message(filters.left_chat_member)
+async def left_member_notify(client: Client, message: Message):
+    chat_id = message.chat.id
+    user = message.left_chat_member
+    for dev_id in DEV_IDS:
+        await client.send_message(dev_id, f"❌ عضو خرج من الكروب [{message.chat.title}]: {user.mention}")
+
+    # حدث حالة الخروج
+    if str(chat_id) in data["groups"]:
+        if str(user.id) in data["groups"][str(chat_id)]["members"]:
+            data["groups"][str(chat_id)]["members"][str(user.id)]["kicked"] = True
+
+# مراقبة الطرد والكتم (تعديل صلاحيات)
+@app.on_message(filters.group & filters.service)
+async def service_monitor(client: Client, message: Message):
+    chat_id = message.chat.id
+    if message.action:
+        # طرد عضو
+        if message.action.kicked_user:
+            user = message.action.kicked_user
+            actor = message.from_user
+            for dev_id in DEV_IDS:
+                await client.send_message(dev_id, f"⛔️ تم طرد {user.mention} بواسطة {actor.mention} في {message.chat.title}")
+        # كتم عضو
+        elif message.action.restricted_user:
+            user = message.action.restricted_user
+            actor = message.from_user
+            for dev_id in DEV_IDS:
+                await client.send_message(dev_id, f"🔇 تم كتم {user.mention} بواسطة {actor.mention} في {message.chat.title}")
+        # رفع أو تنزيل صلاحيات
+        elif message.action.promoted_user:
+            user = message.action.promoted_user
+            actor = message.from_user
+            for dev_id in DEV_IDS:
+                await client.send_message(dev_id, f"🔼 تم رفع صلاحيات {user.mention} بواسطة {actor.mention} في {message.chat.title}")
+        elif message.action.demoted_user:
+            user = message.action.demoted_user
+            actor = message.from_user
+            for dev_id in DEV_IDS:
+                await client.send_message(dev_id, f"🔽 تم تنزيل صلاحيات {user.mention} بواسطة {actor.mention} في {message.chat.title}")
+
+# رصد الرسائل والتفاعل
+@app.on_message(filters.group & filters.text)
+async def count_messages(client: Client, message: Message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    if str(chat_id) in data["groups"]:
+        members = data["groups"][str(chat_id)]["members"]
+        if str(user_id) in members:
+            members[str(user_id)]["messages"] += 1
+            members[str(user_id)]["last_active"] = str(datetime.datetime.now())
+        else:
+            # عضو جديد لكن ما دخل جديد كـ عضو في بياناتنا
+            members[str(user_id)] = {
+                "join_date": str(datetime.datetime.now()),
+                "messages": 1,
+                "calls": 0,
+                "muted": False,
+                "kicked": False,
+                "last_active": str(datetime.datetime.now())
+            }
+
+# رصد الاتصالات (الاتصال)
+@app.on_message(filters.group & filters.call)
+async def monitor_calls(client: Client, message: Message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    now = datetime.datetime.now()
+    if str(chat_id) in data["groups"]:
+        members = data["groups"][str(chat_id)]["members"]
+        if str(user_id) in members:
+            members[str(user_id)]["calls"] += 1
+            members[str(user_id)]["last_active"] = str(now)
+            # تنبيه إذا غير متفاعل مثلاً أقل من 5 رسائل
+            if members[str(user_id)]["messages"] < 5:
+                for dev_id in DEV_IDS:
+                    await client.send_message(dev_id, f"⚠️ عضو {message.from_user.mention} غير متفاعل وصعد اتصال في {message.chat.title}")
+
+# أوامر في الخاص
+
+# أمر start للترحيب
+@app.on_message(filters.private & filters.command("start"))
+async def start_cmd(client: Client, message: Message):
+    if await check_subscription(message.from_user.id):
+        await message.reply("مرحبا، بوت المراقبة شغال!")
+    else:
+        await message.reply("يرجى الاشتراك في القناة لتفعيل البوت.")
+
+# أمر إحصائيات للمطورين
+@app.on_message(filters.private & filters.user(DEV_IDS) & filters.command("stats"))
+async def stats_cmd(client: Client, message: Message):
+    text = "📊 إحصائيات المجموعات:\n\n"
+    for gid, group in data["groups"].items():
+        text += f" - {gid} عدد الأعضاء: {len(group['members'])}\n"
+    await message.reply(text)
+
+# مهمة ترند التفاعل اليومية (تشتغل كل 24 ساعة)
+async def daily_report():
+    await app.wait_until_ready()
+    while True:
+        for dev_id in DEV_IDS:
+            text = "📈 ترند التفاعل اليومي:\n\n"
+            for gid, group in data["groups"].items():
+                members = group["members"]
+                sorted_members = sorted(members.items(), key=lambda x: x[1]["messages"], reverse=True)
+                top_members = sorted_members[:5]
+                for user_id, info in top_members:
+                    text += f" - المستخدم {user_id}: {info['messages']} رسالة\n"
+            await app.send_message(dev_id, text)
+        await asyncio.sleep(86400)  # 24 ساعة
+
+# مهمة إرسال قائمة غير المتفاعلين (تشتغل يومياً)
+async def daily_inactive_report():
+    await app.wait_until_ready()
+    while True:
+        for dev_id in DEV_IDS:
+            text = "📋 قائمة غير المتفاعلين:\n\n"
+            for gid, group in data["groups"].items():
+                for user_id, info in group["members"].items():
+                    if info["messages"] < 1:  # أقل من رسالة
+                        text += f" - المستخدم {user_id}\n"
+            await app.send_message(dev_id, text)
+        await asyncio.sleep(86400)
+
+# بدء الحفظ الدوري والمهام
+@app.on_message(filters.private & filters.user(DEV_IDS) & filters.command("starttasks"))
+async def start_tasks_cmd(client: Client, message: Message):
+    asyncio.create_task(save_data())
+    asyncio.create_task(daily_repكort())
+    asyncio.create_task(daily_inactive_report())
+    await message.reply("تم تشغيل المهام اليومية.")
+
+app.run()
